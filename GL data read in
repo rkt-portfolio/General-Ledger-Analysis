@@ -1,0 +1,393 @@
+OPTIONS COMPRESS =YES;  
+DM LOG 'CLEAR' LOG;
+OPTIONS MPRINT MLOGIC SYMBOLGEN LINESIZE=256 YEARCUTOFF=1976 NOCENTER NOLABEL;
+
+/****************************************************************************
+*   CREATED BY: 
+*   CREATED ON: 
+*   
+*   PROGRAM DESCRIPTION:
+*       IMPORTS AND PREPARES THE GL DATA FOR JEDAR PROCESSING 
+****************************************************************************/
+
+*@@@ SET GLOBAL PARAMETERS @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;
+
+%LET CLIENT = CLIENTNAME;
+%LET WIN_PATH =G:\Client folder path;
+%LET AIX_PATH = \\jedar\jedar\nc_reg\client jedar folder path;
+
+*@@@ CREATE PERMANENT SAS LIBRARIES @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;
+LIBNAME AIXDATA "&AIX_PATH.\SASDATA";
+
+*CONTROL TOTALS MACRO;
+
+%MACRO DATA_SUMMARY(DATAIN,VAR1,VAR2,VAR3);	/* LIST OF VARIABLES CAN BE MODIFIED BASED ON NUMBER OF NUMERIC VARIABLES CONSIDERED FOR CONTROL TOTAL CHECKS - MAKE SURE LOCAL AMOUNT VARIABLES ARE ALSO INCLUDED IF AVAILABLE ON THE GL DATA; REST OF THE MACRO CODE TO BE MODIFIED ACCORDINGLY */		
+		
+	PROC SUMMARY DATA=&DATAIN.;					
+		VAR &VAR1. &VAR2. &VAR3.;					
+		OUTPUT OUT=SUMM SUM=&VAR1._SUM &VAR2._SUM &VAR3._SUM;					
+	RUN;					
+			
+	DATA _NULL_;					
+		SET SUMM;					
+		FORMAT _FREQ_ COMMA20.;					
+		FORMAT &VAR1._SUM &VAR2._SUM &VAR3._SUM COMMA21.2;					
+		PUT @3 "----------------------------------------------------"/;					
+		PUT @5 "CONTROL TOTAL AND TOTAL NUMBER OF RECORDS IN &DATAIN."/;					
+		PUT @10 "TOTAL NUMBER OF RECORDS = " _FREQ_/;					
+		PUT @10 "TOTAL OF &VAR1. = " &VAR1._SUM/;	
+		PUT @10 "TOTAL OF &VAR2. = " &VAR2._SUM/;			
+		PUT @10 "TOTAL OF &VAR3. = " &VAR3._SUM/;	
+		PUT @3 '----------------------------------------------------'/;					
+	RUN;					
+			
+%MEND DATA_SUMMARY;
+
+*IMPORT THE RAW-GL FILES;
+
+/* OPEN FOR GL IMPORT, APPEND, AND/OR CLEAN UP CODE */
+
+*@@@@@@@@@@@CODE HERE@@@@@@@@@@@@@@@@@@@@@@@;
+
+/* END OF IMPORT/CLEAN UP CODE */
+
+*IF THE GL DATA HAS DEBIT AND CREDIT FIELDS - CHECK FOR GL LINES WHERE DEBIT AND CREDIT ARE ON SAME ROW OR WHERE WE HAVE NEGATIVE DEBIT AND/OR NEGATIVE CREDIT AND FIX THE ISSUE ;
+
+DATA DR_CR_ONLY DB_AMT_ONLY(DROP = CREDIT) CB_AMT_ONLY(DROP = DEBIT);
+                SET JE_ALL;
+
+                IF DEBIT >= 0.00 AND CREDIT = 0.00 THEN OUTPUT DR_CR_ONLY; 
+                ELSE IF DEBIT < 0.00 AND CREDIT = 0.00 THEN DO;
+                                CREDIT = ABS(DEBIT);
+                                DEBIT = 0.00;
+                                OUTPUT DR_CR_ONLY;
+                END;
+                ELSE IF DEBIT = 0.00 AND CREDIT >= 0.00 THEN OUTPUT DR_CR_ONLY;
+                ELSE IF DEBIT = 0.00 AND CREDIT < 0.00 THEN DO;
+                                DEBIT = ABS(CREDIT);
+                                CREDIT = 0.00;
+                                OUTPUT DR_CR_ONLY;
+                END;
+                ELSE IF DEBIT > 0.00 AND CREDIT > 0.00 THEN DO;
+                                OUTPUT DB_AMT_ONLY;
+                                OUTPUT CB_AMT_ONLY;
+                END;
+                ELSE IF DEBIT > 0.00 AND CREDIT < 0.00 THEN DO;
+                                OUTPUT DB_AMT_ONLY;
+                                DEBIT = ABS(CREDIT);
+                                OUTPUT DB_AMT_ONLY;
+                END;
+                ELSE IF DEBIT < 0.00 AND CREDIT > 0.00 THEN DO;
+                                OUTPUT CB_AMT_ONLY;
+                                CREDIT = ABS(DEBIT);
+                                OUTPUT CB_AMT_ONLY;
+                END;
+                ELSE IF DEBIT < 0.00 AND CREDIT < 0.00 THEN DO;
+                                TEMP = DEBIT;
+                                DEBIT = ABS(CREDIT);
+                                OUTPUT DB_AMT_ONLY;
+                                CREDIT = ABS(TEMP);
+                                OUTPUT CB_AMT_ONLY;
+                END;
+                DROP TEMP;
+RUN;
+
+DATA JE_ALL_NEW;
+                SET DR_CR_ONLY DB_AMT_ONLY CB_AMT_ONLY;
+
+                IF MISSING(DEBIT) THEN DEBIT = 0;
+                IF MISSING(CREDIT) THEN CREDIT = 0;
+RUN;
+
+*CHECK CONTROL TOTALS BEFORE AND AFTER THE FIX FOR DEBIT AND CREDIT ON SAME ROW, NEGATIVE DEBIT AND NEGATIVE CREDIT;
+
+DATA JE_CNTL_CHK;
+                SET JE_ALL;
+                LENGTH CATEGORY $50.;
+                SPLIT_LINE_CNT = 0;
+                IF (DEBIT >= 0.00 AND CREDIT = 0.00) OR (DEBIT = 0.00 AND CREDIT >= 0.00) THEN DO;
+                                CATEGORY = "1. DEBITS OR CREDITS ONLY";
+                                NEW_DEBIT = DEBIT;
+                                NEW_CREDIT = CREDIT;
+                END; 
+                ELSE IF DEBIT < 0.00 AND CREDIT = 0.00 THEN DO;
+                                NEW_CREDIT = ABS(DEBIT);
+                                NEW_DEBIT = 0;
+                                CATEGORY = "2. NEGATIVE DEBITS";
+                END;
+                ELSE IF DEBIT = 0.00 AND CREDIT < 0.00 THEN DO;
+                                NEW_DEBIT = ABS(CREDIT);
+                                NEW_CREDIT = 0;
+                                CATEGORY = "3. NEGATIVE CREDITS";
+                END;
+                ELSE IF DEBIT > 0.00 AND CREDIT > 0.00 THEN DO;
+                                NEW_DEBIT = DEBIT;
+                                NEW_CREDIT = CREDIT;
+                                SPLIT_LINE_CNT = 1;
+                                CATEGORY = "4. BOTH: DEBITS +VE & CREDITS +VE";
+                END;
+                ELSE IF DEBIT > 0.00 AND CREDIT < 0.00 THEN DO;
+                                NEW_DEBIT = DEBIT + ABS(CREDIT);
+                                NEW_CREDIT = 0; 
+                                SPLIT_LINE_CNT = 1;
+                                CATEGORY = "5. BOTH: DEBITS +VE & CREDITS -VE";
+                END;
+                ELSE IF DEBIT < 0.00 AND CREDIT > 0.00 THEN DO;
+                                NEW_CREDIT = ABS(DEBIT) + CREDIT; 
+                                NEW_DEBIT = 0;
+                                SPLIT_LINE_CNT = 1;
+                                CATEGORY = "6. BOTH: DEBITS -VE & CREDITS +VE";
+                END;
+                ELSE IF DEBIT < 0.00 AND CREDIT < 0.00 THEN DO;
+                                NEW_DEBIT = DEBIT + ABS(DEBIT) + ABS(CREDIT);
+                                NEW_CREDIT = CREDIT + ABS(DEBIT) + ABS(CREDIT); 
+                                SPLIT_LINE_CNT = 1;
+                                CATEGORY = "7. BOTH: DEBITS -VE & CREDITS -VE";
+                END;
+RUN;QUIT;
+
+PROC SUMMARY DATA = JE_CNTL_CHK NWAY MISSING;
+                CLASS CATEGORY;
+                VAR SPLIT_LINE_CNT DEBIT CREDIT NEW_DEBIT NEW_CREDIT;
+                OUTPUT OUT = JE_CNTL_CHK_SUMM (DROP = _TYPE_ RENAME = (_FREQ_ = RECORD_CNT)) SUM=;
+RUN;QUIT;
+
+DATA FINAL_CONTROL_TOTALS;
+SET JE_CNTL_CHK_SUMM;
+*FINAL_CONTROL TOTALS AFTER FIX;
+FINAL_CONTROL_TOTAL=SUM(RECORD_CNT,SPLIT_LINE_CNT);
+RENAME DEBIT=DEBIT_ORIG CREDIT=CREDIT_ORIG;
+RUN;
+
+*PRINT CONTROL TOTALS BEFORE AND AFTER THE FIX FOR DEBIT_AMT AND CREDIT_AMT ON SAME ROW, NEGATIVE DEBIT_AMT AND NEGATIVE CREDIT_AMT;
+
+                DATA _NULL_;                                                                  
+                                SET FINAL_CONTROL_TOTALS;                                                                  
+                                FORMAT RECORD_CNT  SPLIT_LINE_CNT FINAL_CONTROL_TOTAL COMMA20.;                                                                 
+                                FORMAT DEBIT_ORIG CREDIT_ORIG NEW_DEBIT NEW_CREDIT COMMA21.2;                                                                      
+                                PUT @3 "----------------------------------------------------"/;                                                                 
+                                PUT @5 "CONTROL TOTAL AND TOTAL NUMBER OF RECORDS"/;                                                                               
+                                PUT @10 "TOTAL NUMBER OF RECORDS = " RECORD_CNT/;
+                                PUT @10 "CATEGORY:   " CATEGORY/;
+                                PUT @10 "TOTAL OF SPLIT LINES = " SPLIT_LINE_CNT/;   
+                                PUT @10 "FINAL_CONTROL_TOTALS = " FINAL_CONTROL_TOTAL/;         
+                                PUT @10 "TOTAL OF RAW DEBIT_AMT = " DEBIT_ORIG/;                                               
+                                PUT @10 "TOTAL OF RAW CREDIT_AMT = " CREDIT_ORIG/;          
+                                PUT @10 "TOTAL OF NEW DEBIT_AMT = " NEW_DEBIT/;                                                
+                                PUT @10 "TOTAL OF NEW CREDIT_AMT = " NEW_CREDIT/;          
+                                PUT @3 '----------------------------------------------------'/;                                                                   
+                RUN;                                                                     
+
+*CONTROL TOTALS FOR THE FINAL DATASET AFTER FIXING THE SAME LINE, NEGATIVE DR-CR;
+
+PROC SUMMARY DATA=JE_ALL_NEW;                                                                   
+                                VAR DEBIT CREDIT;                                                                          
+                                OUTPUT OUT=SUMM SUM=;                                                                     
+                RUN;                                                                     
+                                                
+DATA _NULL_;                                                                  
+                                SET SUMM;                                                                        
+                                FORMAT _FREQ_ COMMA20.;                                                                   
+                                FORMAT DEBIT CREDIT COMMA21.2;                                                                      
+                                PUT @3 "----------------------------------------------------"/;                                                                 
+                                PUT @5 "CONTROL TOTAL AND TOTAL NUMBER OF RECORDS IN JE ALL AFTER FIXING"/;                                                                                
+                                PUT @10 "TOTAL NUMBER OF RECORDS = " _FREQ_/;                                                                    
+                                PUT @10 "TOTAL OF FINAL DEBIT AMOUNT = " DEBIT/;  
+                                PUT @10 "TOTAL OF FINAL CREDIT AMOUNT = " CREDIT/;                                             
+                                PUT @3 '----------------------------------------------------'/;                                                                   
+RUN;
+
+
+*EXPORT OUT THE SUMMARY OF VARIOUS DEBIT CREDIT ANALYSES ON TO THE DATA QUALITY CHECKS REPORT;
+PROC EXPORT DATA=FINAL_CONTROL_TOTALS
+OUTFILE = "&WIN_PATH.\OUTPUT\&CLIENT. DATA QUALITY REPORT.XLS"
+                DBMS = EXCEL REPLACE;
+                SHEET = "DEBIT-CREDIT SCENARIOS";
+RUN;
+
+
+*END OF FIX FOR DEBIT AND CREDIT ON SAME ROW, NEGATIVE DEBIT AND NEGATIVE CREDIT;
+
+DATA RAWJE;
+SET JE_ALL_NEW; /* ASSIGN "JE_ALL" DATA SET IF THE ABOVE CODE TO CHECK GL LINES WHERE DEBIT AND CREDIT ARE ON SAME ROW OR WHERE WE HAVE NEGATIVE DEBIT AND/OR NEGATIVE CREDIT WAS NOT APPLICABLE <DELETE THIS COMMENT ONCE READ> */
+
+*AMOUNT VARIABLES;
+
+/*POSSIBLE SCENARIOS OF AMOUNT DEFINITION ARE PROVIDED BELOW, PICK THE RIGHT ONE AS APPLICABLE AND DELETE THE REST <DELETE THIS COMMENT ONCE READ> */
+
+/* SCENARIO 1: ONLY DEBIT AND CREDIT ARE AVAILABLE ON THE DATA, PERFORMED FIX ABOVE FOR DEBIT AND CREDIT ON SAME ROW, NEGATIVE DEBIT AND NEGATIVE CREDIT - REMOVE IF NOT APPLICABLE <DELETE THIS COMMENT ONCE READ> */
+
+AMOUNT= DEBIT - CREDIT;
+
+	IF AMOUNT > 0 THEN DO;
+		DR_CR = "DR";
+		DEBIT_AMT=AMOUNT;
+		CREDIT_AMT=0;
+	END;
+
+	ELSE IF AMOUNT < 0 THEN DO;
+		DR_CR = "CR";
+		DEBIT_AMT=0;
+		CREDIT_AMT=ABS(AMOUNT);
+	END;
+	ELSE DO;
+		DR_CR = " ";
+		DEBIT_AMT=0;
+		CREDIT_AMT=0;
+	END;
+
+/* SCENARIO 2: ONLY AMOUNT FIELD AVAILABLE ON THE DATA, AND NO DEBIT/CREDIT INDICATOR - REMOVE IF NOT APPLICABLE <DELETE THIS COMMENT ONCE READ> */
+
+*AMOUNT;
+AMOUNT=JOURNAL_AMOUNT;
+
+IF MISSING(AMOUNT) THEN AMOUNT=0;
+
+	IF AMOUNT > 0 THEN DO;
+		DR_CR = "DR";
+		DEBIT_AMT=AMOUNT;
+		CREDIT_AMT=0;
+	END;
+
+	ELSE IF AMOUNT < 0 THEN DO;
+		DR_CR = "CR";
+		DEBIT_AMT=0;
+		CREDIT_AMT=ABS(AMOUNT);
+	END;
+	ELSE DO;
+		DR_CR = "DR";
+		DEBIT_AMT=0;
+		CREDIT_AMT=0;
+	END;
+
+* SCENARIO 3. ONLY AMOUNT AND DEBIT-CREDIT INDICATOR FIELDS AVAILABLE ON THE GL DATA - REMOVE IF NOT APPLICABLE <DELETE THIS COMMENT ONCE READ>;
+
+AMOUNT=JOURNAL_AMOUNT;
+
+IF MISSING(AMOUNT) THEN AMOUNT=0;
+
+	IF DEBIT_CREDIT_IND="S" THEN DO;/*SPECIFY THE DR-CR INDICATOR VARIABLE NAME AND VALUE INDICATING DEBIT AMOUNT*/
+			DR_CR = "DR";
+			DEBIT_AMT=AMOUNT;
+			CREDIT_AMT=0;
+	END;
+
+	ELSE IF DEBIT_CREDIT_IND="H" THEN DO;/*SPECIFY THE DR-CR INDICATOR VARIABLE NAME AND VALUE INDICATING CREDIT AMOUNT*/
+			DR_CR = "CR";
+			DEBIT_AMT=0;
+			CREDIT_AMT=AMOUNT;
+	END;
+
+	ELSE DO;
+			DR_CR = "";
+			DEBIT_AMT=0;
+			CREDIT_AMT=0;
+	END;	
+RUN;
+
+*OPEN TO PERFORM ANY EXCLUSIONS PRIOR TO RECONCILIATION CHECKS AND JEDAR PREPARATION - NOT APPLICABLE IF THERE ARE NO SUCH EXCLUSIONS;
+
+DATA RAWJE_AFTER_EXCL AIXDATA.JE_EXCLUDED;
+SET RAWJE;
+*@@@@@@@ SPECIFY THE EXCLUSION AFTER THE NOTE BELOW <DELETE THIS COMMENT ONCE READ>;
+/*NOTE: AS PER "AUDIT CONTACT", ALL THE GL LINES CORRESPONDING TO XXXXXXXXXXXXXXX (SPECIFY THE EXCLUSION IN PLAIN LANGUAGE) ARE BEING EXCLUDED PRIOR TO RECONCILIATION CHECKS AND JEDAR PREPARATION*/
+
+RUN;
+
+*PRINT CONTROL TOTALS ON THE LOG;
+
+/* CONTROL TOTAL OF EXCLUSIONS PERFORMED PRIOR TO RECONCILIATION CHECKS AND JEDAR PREPARATION */
+%DATA_SUMMARY(AIXDATA.JE_EXCLUDED,AMOUNT,DEBIT_AMT,CREDIT_AMT);
+
+/* CONTROL TOTAL OF REMAINING GL POPULATION CARRIED FORWARD FOR JEDAR */
+%DATA_SUMMARY(RAWJE_AFTER_EXCL,AMOUNT,DEBIT_AMT,CREDIT_AMT);
+
+*END OF CODE FOR EXCLUSIONS AND CONTROL TOTAL CHECKS
+
+
+*PREPARING THE DATA FOR JEDAR;
+
+/* PLEASE CAPTURE ALL RELEVANT DETAILS/INSTRUCTIONS PERTAINING TO DATA FIELD PREPARATION - BASED ON CONVERSATIONS WITH AUDIT/CLIENT TEAM ON THE COURSE OF THE PROJECT */
+/* ALL SUCH INFORMATION WILL HELP AS A REFERENCE FOR FUTURE TESTING */
+
+DATA AIXDATA.&CLIENT._RAWJE;
+
+SET RAWJE_AFTER_EXCL; 
+
+LENGTH PERIOD 4. ACCOUNT $20. YEAR 4. USER_ID $50.; 
+
+*MAN_SYS LOGIC; 
+IF UPCASE(COMPRESS(GLDCT)) = "JE" THEN MAN_SYS="N";
+ELSE MAN_SYS="S";
+
+*UNIQUE JOURNAL IDENTIFIER;
+JRN_ENTRY=COMPRESS(BATCH_NUMBER||"-"||FACILITY_CODE);
+
+*JOURNAL DESCRIPTION;
+JRN_DESCR=COMPBL(UPCASE(JOURNAL_DESCRIPTION));
+
+*DATES, PERIOD AND YEAR;
+EFFECTIVE_DATE=ENTRY_DATE;
+POSTED_DATE=ENTRY_DATE;
+PERIOD=REPORTING_PERIOD;
+YEAR=2011;
+
+
+*USER_ID;
+USER_ID=COMPBL(ENTRY_USER_ID);
+CURRENCY="USD";
+
+*STANDARD VARIALBE CREATION;
+	ROW_ID = _N_;
+
+	IF AMOUNT > 0 THEN DO;
+		DR_CR=”DR”;
+		DEBIT_CNT=1;
+		CREDIT_CNT=0;
+		ZERO_CNT=0;
+	END;
+	ELSE IF AMOUNT < 0 THEN DO;
+		DR_CR=”CR”;
+		DEBIT_CNT=0;
+		CREDIT_CNT=1;
+		ZERO_CNT=0;
+	END;
+	ELSE  DO;
+		DR_CR=””;
+		DEBIT_CNT=0;
+		CREDIT_CNT=0;
+		ZERO_CNT=1;
+	END;
+		
+	LOCAL_ABS_AMT = ABS(AMOUNT);*ASSIGN LOCAL AMOUNT FIELD IF AVAILABLE;
+	ABS_AMT = ABS(AMOUNT);
+
+*OPEN FOR ANY ADDITIONAL FIELD PREPARATION
+	
+FORMAT EFFECTIVE_DATE POSTED_DATE MMDDYY10.;
+FORMAT AMOUNT DEBIT_AMT CREDIT_AMT LOCAL_ABS_AMT ABS_AMT 32.2;
+RUN;
+
+*CONTROL TOTALS ON THE GL DATASET READY FOR JEDAR;
+%DATA_SUMMARY(AIXDATA.&CLIENT._RAWJE,AMOUNT,DEBIT_AMT,CREDIT_AMT);
+
+
+*SUMMARIZING THE GL DATA ON ACCOUNT FOR RECONCILIATION;
+
+PROC SUMMARY DATA=AIXDATA.&CLIENT._RAWJE NWAY MISSING;
+CLASS ACCOUNT;
+VAR AMOUNT DEBIT_AMT CREDIT_AMT;
+ID ACCOUNT_DESCRIPTION;
+OUTPUT OUT=AIXDATA.JE_SUM(DROP=_TYPE_ RENAME=(_FREQ_=JE_COUNT))SUM=;
+RUN;
+
+*SUMMARIZE THE GL DATA ON COMPANY CODE AND ACCOUNT - IF REQUIRED TO RECONCILE BY COMPANY CODE;
+
+PROC SUMMARY DATA=AIXDATA.&CLIENT._RAWJE NWAY MISSING;
+CLASS COMPANY ACCOUNT;
+VAR AMOUNT DEBIT_AMT CREDIT_AMT;
+ID ACCOUNT_DESCRIPTION;
+OUTPUT OUT=AIXDATA.JE_SUM_BY_COMP(DROP=_TYPE_ RENAME=(_FREQ_=JE_COUNT))SUM=;
+RUN;
+
+/* END OF PROGRAM */
