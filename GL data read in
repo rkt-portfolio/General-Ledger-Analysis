@@ -1,3 +1,4 @@
+
 OPTIONS COMPRESS =YES;  
 DM LOG 'CLEAR' LOG;
 OPTIONS MPRINT MLOGIC SYMBOLGEN LINESIZE=256 YEARCUTOFF=1976 NOCENTER NOLABEL;
@@ -7,14 +8,14 @@ OPTIONS MPRINT MLOGIC SYMBOLGEN LINESIZE=256 YEARCUTOFF=1976 NOCENTER NOLABEL;
 *   CREATED ON: 
 *   
 *   PROGRAM DESCRIPTION:
-*       IMPORTS AND PREPARES THE GL DATA FOR JEDAR PROCESSING 
+*       IMPORTS AND PREPARES THE GL DATA FOR abc PROCESSING 
 ****************************************************************************/
 
 *@@@ SET GLOBAL PARAMETERS @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;
 
 %LET CLIENT = CLIENTNAME;
 %LET WIN_PATH =G:\Client folder path;
-%LET AIX_PATH = \\jedar\jedar\nc_reg\client jedar folder path;
+%LET AIX_PATH = \\abc\abc\nc_reg\client abc folder path;
 
 *@@@ CREATE PERMANENT SAS LIBRARIES @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;
 LIBNAME AIXDATA "&AIX_PATH.\SASDATA";
@@ -391,3 +392,5 @@ OUTPUT OUT=AIXDATA.JE_SUM_BY_COMP(DROP=_TYPE_ RENAME=(_FREQ_=JE_COUNT))SUM=;
 RUN;
 
 /* END OF PROGRAM */
+Contact GitHub API Training Shop Blog About
+© 2017 GitHub, Inc. Terms Privacy Security Status Help
