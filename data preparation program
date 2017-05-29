@@ -1,0 +1,283 @@
+RESETLINE;
+DM LOG "CLEAR" LOG;
+
+/**********************************************************************************/
+/*** CLIENT NAME:	ABC								***/
+/*** TESTING PERIOD: 01/APR/2014 TO 31/MAR/2015									***/
+/**********************************************************************************/
+/*** CREATED BY:	RAHUL KUMAR THATIKONDA					***/
+/*** CREATED ON: 	27 - APRIL - 2015						***/
+/*** PURPOSE: TO READ-IN AND PREPARE THE RAW JOURNAL ENTRY, TRIAL BALANCE AND	***/
+/***          CHART OF ACCOUNTS FILES FOR JEDAR ANALYSIS			***/
+/**********************************************************************************/
+
+
+/**********************************************************************************/
+/*** DEFINING WINTEL PATH AND A PERMANENT SAS LIBRARY				***/
+/**********************************************************************************/
+OPTIONS OBS=MAX REPLACE MPRINT MLOGIC SYMBOLGEN COMPRESS=YES;
+
+%LET CLIENT = HOLA;
+%LET PATH = \\abc;
+
+LIBNAME SASDATA "&PATH.\SASDATA";
+
+/**********************************************************************************/
+/*** CONTROL TOTALS MACRO 							***/
+/**********************************************************************************/
+
+%MACRO CONTROL_TOTAL(LIBNAME=,DATASET=,VAR=);
+		PROC SUMMARY DATA= &LIBNAME..&DATASET. NWAY MISSING;
+		    VAR &VAR.;
+		    OUTPUT OUT = &DATASET._SUM (KEEP = _FREQ_ &VAR.) SUM=;
+		RUN;
+          %LET CNT = %EVAL(((%SYSFUNC(LENGTH(&VAR.))) - (%SYSFUNC(LENGTH(%SYSFUNC(COMPRESS(&VAR.))))))+1);
+                   DATA _NULL_;
+                   SET &DATASET._SUM;
+                   FORMAT _FREQ_ COMMA30.;
+                   FORMAT &VAR. DOLLAR30.2;
+                   PUT @3 "---------------------------------------------------------------------------------------"/;
+                   PUT @5 "RECORD COUNT & CONTROL TOTALS FOR &DATASET. "/;
+                   PUT @5 "RECORD COUNT = " _FREQ_/;
+                   %DO I = 1 %TO &CNT.;
+                             %LET VAR1 = %SCAN(&VAR.,&I.);
+                             PUT @5 "&VAR1. = " &VAR1./;
+                   %END;
+                   PUT @3 "---------------------------------------------------------------------------------------"/;
+                   RUN;
+%MEND;
+
+/**********************************************************************************/
+/*** MACRO TO EXPORT FILES IN PIPE DELIMITED FORMAT				***/
+/**********************************************************************************/
+
+%MACRO EXPORT(NAME);
+	PROC EXPORT DATA = SASDATA.&NAME.
+		OUTFILE = "&PATH.\OUT\&NAME..TXT" 
+		DBMS = DLM REPLACE;
+		DELIMITER = '7C'X;
+	RUN;
+%MEND EXPORT;
+
+/**********************************************************************************/
+/*** MACRO FOR EXPORTING RESULTS IN EXCEL FORMAT				***/
+/**********************************************************************************/
+%MACRO EXPORTEXCEL(LIB, DATASET, OUTFILE, SHEET);
+	PROC EXPORT	DATA = &LIB..&DATASET.
+		OUTFILE = "&PATH.\OUT\&OUTFILE..xlsx"
+		DBMS = XLSX REPLACE;
+		SHEET = "&SHEET.";
+	RUN;
+%MEND EXPORTEXCEL;
+
+/**********************************************************************************/
+/*** READ IN OF THE RAW JOURNAL ENTRY FILE					***/
+/**********************************************************************************/
+
+%MACRO JE_READ(INFILE, OUTFILE);
+DATA SASDATA.RAW_JE_&OUTFILE.;
+	INFILE "&PATH.\Raw\&INFILE..TXT" DELIMITER = '09'X MISSOVER DSD LRECL = 32767 FIRSTOBS = 2;
+INPUT
+		Company				:$50.
+		Posted_by			:$50.
+		Doc_type			:$50.
+		GL_account			:$50.
+		GL_text				:$250.
+		Post_date			:ANYDTDTE.
+		Dcument_no			:$50.
+		Reference			:$50.
+		BA					:$50.
+		Cost_center_code	:$50.
+		Cost_Center_text	:$250.
+		Local_currency		:$50.
+		PK					:$50.
+		Debit_amt			:COMMA32.
+		Credit_amt			:COMMA32.
+		Total				:COMMA32.
+		Amount				:COMMA32.
+		Transaction_currency:$50.
+		Debit_amt_1			:COMMA32.
+		Credit_amt_1		:COMMA32.
+		Doc_header_text		:$250.
+		Opponent_Acct_code	:$50.
+		Opponent_Acct_text	:$250.
+		Sort_key			:$50.
+		Text				:$250.
+		Tr_ID				:$50.
+		Tax					:$50.
+		Reverse_doc_no		:$50.
+		Cross_CC_no			:$50.
+		Asset_Tran_Type		:$50.
+	;
+	FORMAT Debit_amt Credit_amt Total Amount Debit_amt_1 Credit_amt_1 32.2 POST_DATE MMDDYY10.;
+	ROW_ID = _N_;
+RUN;
+%CONTROL_TOTAL(LIBNAME=SASDATA,DATASET=RAW_JE_&OUTFILE. ,VAR=Debit_amt Credit_amt Total Amount Debit_amt_1 Credit_amt_1 );
+%MEND;
+
+%JE_READ(R-1 Journal Entry Dump Jan,JAN);
+
+
+/**********************************************************************************/
+/***				 PREPARING THE RAW JOURNAL ENTRY FILE						***/
+/**********************************************************************************/
+
+DATA SASDATA.&CLIENT._JE;
+SET SASDATA.RAW_JE_JAN SASDATA.RAW_JE_FEB_MAR SASDATA.RAW_JE_APR_DEC;
+LENGTH ACCOUNT $50.;
+ACCOUNT = GL_ACCOUNT;
+EFFECTIVE_DATE = POST_DATE;
+FORMAT EFFECTIVE_DATE MMDDYY10.;
+PERIOD = MONTH(POST_DATE);
+RUN;
+%CONTROL_TOTAL(LIBNAME=SASDATA,DATASET=&CLIENT._JE,VAR=DEBIT_AMT CREDIT_AMT AMOUNT);
+
+
+/**********************************************************************************/
+/*** CHECK IF THE DATA CONTAINS NEGATIVE DR/CR OR SAME LINE DR/CR		***/
+/**********************************************************************************/
+DATA _NULL_;
+SET SASDATA.&CLIENT._JE;
+	IF ABS(DEBIT_AMOUNT) > 0 AND ABS(CREDIT_AMOUNT) > 0 THEN DO;
+		PUT "WARNING: Data contains debit and credit amounts in same line. Please fix the data.";
+		STOP;
+	END;
+RUN;
+DATA _NULL_;
+SET SASDATA.&CLIENT._JE;
+	IF DEBIT_AMOUNT < 0 OR CREDIT_AMOUNT < 0 THEN DO;
+		PUT "WARNING: Data contains negative debit or negative credit amounts. Please fix the data.";
+		STOP;
+	END;
+RUN;
+
+/**********************************************************************************/
+/***		 CHECK IF THE DATA CONTAINS SPLIT LINES				***/
+/**********************************************************************************/
+DATA _NULL_;
+SET SASDATA.&CLIENT._JE;
+	IF COMPRESS(PERIOD)="";
+		PUT "WARNING: Data contains Split lines. Please fix the data.";
+		STOP;
+	END;
+RUN;
+
+
+/**********************************************************************************/
+/*** 			SUMMARY OF JE FIELDS 											***/
+/**********************************************************************************/
+
+%MACRO DQC(SUMM_FIELD, AMOUNT_FIELDS);
+	PROC SUMMARY DATA = SASDATA.&CLIENT._JE NWAY MISSING;
+		CLASS &SUMM_FIELD.;
+		VAR &AMOUNT_FIELDS.;
+		OUTPUT OUT = SASDATA.&SUMM_FIELD._SUM (DROP = _TYPE_ RENAME = (_FREQ_ = JE_LINE_COUNT)) SUM=;
+	RUN;
+
+DATA _NULL_ ; 
+SET SASDATA.&SUMM_FIELD._SUM NOBS=OBSCOUNT ; 
+CALL SYMPUT('NROWS',TRIM(LEFT(PUT(OBSCOUNT,8.))));
+	STOP;
+RUN;
+
+%EXPORTEXCEL(SASDATA, &SUMM_FIELD._SUM, DQ Checks, &SUMM_FIELD. );
+
+%MEND DQC;
+
+%DQC(Company, DEBIT_AMT CREDIT_AMT AMOUNT);
+%DQC(Posted_by, DEBIT_AMT CREDIT_AMT AMOUNT);
+%DQC(Doc_type, DEBIT_AMT CREDIT_AMT AMOUNT);
+%DQC(Local_currency, DEBIT_AMT CREDIT_AMT AMOUNT);
+%DQC(ACCOUNT, DEBIT_AMT CREDIT_AMT AMOUNT);
+
+/**********************************************************************************/
+/**		PERIOD SUMMARY OF THE GL DATA					**/
+/**********************************************************************************/
+PROC SQL;
+CREATE TABLE SASDATA.PERIOD_SUMMARY AS SELECT DISTINCT(PERIOD),
+COUNT(*) AS TOTAL_COUNT FORMAT COMMA32.,
+MIN(POST_DATE) AS MIN_POST_DATE FORMAT MMDDYY10.,
+MAX(POST_DATE) AS MAX_POST_DATE FORMAT MMDDYY10.,
+NMISS(POST_DATE) AS MISS_POST_DATE FORMAT 32.,
+MIN(EFFECTIVE_DATE) AS MIN_EFFECTIVE_DATE FORMAT MMDDYY10.,
+MAX(EFFECTIVE_DATE) AS MAX_EFFECTIVE_DATE FORMAT MMDDYY10.,
+NMISS(EFFECTIVE_DATE) AS MISS_EFFECTIVE_DATE FORMAT 32.,
+SUM(DEBIT_AMT) AS TOTAL_DEBIT,
+SUM(CREDIT_AMT) AS TOTAL_CREDIT,
+SUM(AMOUNT) AS TOTAL_AMOUNT
+FROM SASDATA.&CLIENT._JE
+GROUP BY PERIOD;
+QUIT;
+%EXPORTEXCEL(SASDATA, PERIOD_SUMMARY, DQ Checks,Period Summary);
+
+
+ /**********************************************************************
+ *   			TB READ IN
+ ***********************************************************************/
+    DATA SASDATA.TB    ;
+    INFILE "&PATH.\RAW\TB.TXT" DELIMITER='09'X TRUNCOVER DSD LRECL=32767 FIRSTOBS=2 ;
+        INPUT
+                ACCOUNT 	:	$50.
+                DESCRIPTION :	$250.
+                END_BAL		:	BEST32.
+                BEG_BAL		:	BEST32.
+    ;
+    RUN;
+
+	PROC SUMMARY DATA=SASDATA.TB NWAY MISSING;
+	CLASS ACCOUNT;
+	VAR BEG_BAL END_BAL;
+	ID DESCRIPTION;
+	OUTPUT OUT=SASDATA.TB_SUMM (DROP=_TYPE_ _FREQ_) SUM=;
+	RUN;
+
+/**********************************************************************************/
+/***			RECONCILIATION 													***/
+/**********************************************************************************/
+
+	DATA SASDATA.RECON;
+	RETAIN Account Description Found_In Type Je_Line_Count Debit_Amt Credit_Amt Je_Activity Beg_Bal End_Bal Tb_Activity Difference Abs_Diff;
+	LENGTH FOUND_IN $7. ;
+	MERGE SASDATA.ACCOUNT_SUM(IN=A) SASDATA.TB_SUMM(IN=B);
+	BY ACCOUNT;
+	IF JE_LINE_COUNT=. THEN JE_LINE_COUNT=0;
+	
+	END_BAL=COALESCE(END_BAL,0);
+	BEG_BAL=COALESCE(BEG_BAL,0);
+	*UPDATE THE BS-IS LOGIC AND THE TB ACTIVITY DEFINITION ACCORDINGLY;
+	IF SUBSTRN(ACCOUNT,1,1) IN ("1","2","3") THEN DO;
+	TYPE="BS";
+	TB_ACTIVITY=END_BAL-BEG_BAL;
+	END;
+	ELSE DO;
+	TYPE="IS";
+	TB_ACTIVITY=END_BAL;
+	END;
+	IF DEBIT_AMT=. THEN DEBIT_AMT=0.00;
+	IF CREDIT_AMT=. THEN CREDIT_AMT=0.00;
+	IF AMOUNT=. THEN AMOUNT=0.00;
+
+	TB_ACTIVITY=COALESCE(TB_ACTIVITY,0);
+	JE_ACTIVITY=AMOUNT;
+
+	DIFFERENCE=SUM(JE_ACTIVITY,-TB_ACTIVITY);
+	ABS_DIFF=ABS(DIFFERENCE);
+	FORMAT AMOUNT DIFFERENCE 32.2;
+
+	IF A AND B THEN FOUND_IN='BOTH';
+	ELSE IF A AND NOT B THEN FOUND_IN='JE_ONLY';
+	ELSE IF B AND NOT A THEN FOUND_IN='TB_ONLY';
+
+RUN;
+
+PROC SORT DATA=SASDATA.RECON; BY DESCENDING ABS_DIFF; RUN;
+
+DATA UNRECON;
+SET SASDATA.RECON;
+IF ABS_DIFF > 1;
+RUN;
+
+
+%EXPORTEXCEL(SASDATA, RECON, RECON, RECON);
+
+/*END OF PROGRAM*/
