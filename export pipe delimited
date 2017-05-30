@@ -1,0 +1,12 @@
+
+******************************************************************************;
+***              MACRO TO EXPORT DATASETS IN PIPE DELIMITED FORMAT
+******************************************************************************;
+%MACRO EXPORT_DELIM(DATASET);
+       PROC EXPORT DATA=SASDATA.&DATASET.
+            OUTFILE="&PATH.\OUTPUT\&DATASET..TXT"
+            DBMS=DLM
+            REPLACE;
+            DELIMITER='|';
+       RUN;
+%MEND;
