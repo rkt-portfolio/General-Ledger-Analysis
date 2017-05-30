@@ -1,0 +1,26 @@
+******************************************************************************;
+***               MACRO FOR CONTROL TOTALS 
+******************************************************************************;
+
+%MACRO CONTOT(LIBNAME =,DATASET=,VAR=);
+       PROC SUMMARY DATA= &LIBNAME..&DATASET. NWAY MISSING;
+            VAR &VAR.;
+            OUTPUT OUT = &DATASET._SUMM (KEEP = _FREQ_ &VAR.) SUM=;
+       RUN;
+       %LET CNT = %EVAL(((%SYSFUNC(LENGTH(&VAR.))) - (%SYSFUNC(LENGTH(%SYSFUNC(COMPRESS(&VAR.))))))+1);
+       DATA _NULL_;
+            SET &DATASET._SUMM;
+            FORMAT _FREQ_ COMMA30.;
+            FORMAT &VAR. DOLLAR30.2;
+            PUT @5 "---------------------------------------------------------------------------------------"/;
+            PUT @5 "RECORD COUNT & CONTROL TOTALS FOR &DATASET. "/;
+            PUT @5 "RECORD COUNT = " _FREQ_/;
+                %DO I = 1 %TO &CNT.;
+                %LET VAR1 = %SCAN(&VAR.,&I.);
+                     PUT @5 "&VAR1. = " &VAR1./;
+                %END;
+            PUT @5 "---------------------------------------------------------------------------------------"/;
+      RUN;
+%MEND;
+
+%CONTOT(LIBNAME =SASDATA,DATASET=GL_EUR,VAR=DRAMT CRAMT CURYDRAMT CURYCRAMT);
