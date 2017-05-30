@@ -1,0 +1,11 @@
+
+******************************************************************************;
+***              MACRO TO EXPORT DATASETS INTO EXCEL
+******************************************************************************;
+%MACRO EXPORT_EXCEL(DATASET,OUTFILE,SHEET);
+PROC EXPORT DATA= SASDATA.&DATASET.
+            OUTFILE= "&PATH.\OUTPUT\&OUTFILE..XLS"
+            DBMS=EXCEL REPLACE;
+            SHEET="&SHEET.";
+       RUN;
+%MEND;
